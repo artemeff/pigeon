@@ -78,6 +78,7 @@ defmodule Pigeon.Http2.Client do
   """
 
   @type uri :: charlist
+  @type state :: term
 
   @doc ~S"""
   Default http2 client to use.
@@ -96,14 +97,15 @@ defmodule Pigeon.Http2.Client do
   @callback start() :: no_return
 
   @callback connect(uri :: uri, scheme :: :https, options :: Keyword.t()) ::
-              {:ok, pid} | {:error, any}
+              {:ok, pid} | {:ok, pid, state} | {:error, any}
 
-  @callback send_ping(pid) :: :ok
+  @callback send_ping(pid, state) :: :ok | {:ok, state}
 
-  @callback send_request(pid, headers :: [{binary, binary}, ...], data :: String.t()) ::
-              :ok
+  @callback send_request(pid, stream_id :: pos_integer, headers :: [{binary, binary}, ...], data :: String.t()) ::
+              {:ok, state}
 
-  @callback handle_end_stream(msg :: term, state :: term) ::
-              {:ok, %Pigeon.Http2.Stream{}}
+  @callback handle_end_stream(pid, msg :: term, state) ::
+              {:ok, %Pigeon.Http2.Stream{}, state}
+              | {:ok, state}
               | any
 end

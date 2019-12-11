@@ -8,6 +8,7 @@ defmodule Pigeon.Connection do
             from: nil,
             requested: 0,
             socket: nil,
+            socket_state: nil,
             stream_id: 1,
             queue: NotificationQueue.new()
 
@@ -48,9 +49,9 @@ defmodule Pigeon.Connection do
     state = %Connection{config: config, from: from}
 
     case connect_socket(config, 0) do
-      {:ok, socket} ->
+      {:ok, socket, socket_state} ->
         Configurable.schedule_ping(config)
-        {:consumer, %{state | socket: socket}, subscribe_to: [from]}
+        {:consumer, %{state | socket: socket, socket_state: socket_state}, subscribe_to: [from]}
 
       {:error, reason} ->
         {:stop, reason}
@@ -61,7 +62,8 @@ defmodule Pigeon.Connection do
 
   def connect_socket(config, tries) do
     case Configurable.connect(config) do
-      {:ok, socket} -> {:ok, socket}
+      {:ok, socket} -> {:ok, socket, nil}
+      {:ok, socket, socket_state} -> {:ok, socket, socket_state}
       {:error, _reason} -> connect_socket(config, tries + 1)
     end
   end
@@ -83,10 +85,15 @@ defmodule Pigeon.Connection do
   # Info
 
   def handle_info(:ping, state) do
-    Client.default().send_ping(state.socket)
+    new_state =
+      case Client.default().send_ping(state.socket, state.socket_state) do
+        {:ok, socket_state} -> %{state | socket_state: socket_state}
+        _else -> state
+      end
+
     Configurable.schedule_ping(state.config)
 
-    {:noreply, [], state}
+    {:noreply, [], new_state}
   end
 
   def handle_info({:closed, _}, %{from: from} = state) do
@@ -95,9 +102,15 @@ defmodule Pigeon.Connection do
   end
 
   def handle_info(msg, state) do
-    case Client.default().handle_end_stream(msg, state) do
-      {:ok, %Stream{} = stream} -> process_end_stream(stream, state)
-      _else -> {:noreply, [], state}
+    case Client.default().handle_end_stream(state.socket, msg, state.socket_state) do
+      {:ok, %Stream{} = stream, socket_state} ->
+        process_end_stream(stream, %{state | socket_state: socket_state})
+
+      {:ok, socket_state} ->
+        {:noreply, [], %{state | socket_state: socket_state}}
+
+      _else ->
+        {:noreply, [], state}
     end
   end
 
@@ -151,7 +164,14 @@ defmodule Pigeon.Connection do
     headers = Configurable.push_headers(config, notification, opts)
     payload = Configurable.push_payload(config, notification, opts)
 
-    Client.default().send_request(state.socket, headers, payload)
+    state =
+      case Client.default().send_request(state.socket, state.stream_id, headers, payload, state.socket_state) do
+        {:ok, socket_state} ->
+          %{state | socket_state: socket_state}
+
+        _else ->
+          state
+      end
 
     new_q =
       NotificationQueue.add(
