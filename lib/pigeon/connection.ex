@@ -7,7 +7,8 @@ defmodule Pigeon.Connection do
             config: nil,
             from: nil,
             requested: 0,
-            socket: nil,
+            conn: nil,
+            conn_state: nil,
             stream_id: 1,
             queue: NotificationQueue.new()
 
@@ -38,22 +39,23 @@ defmodule Pigeon.Connection do
   def init({config, from}) do
     state = %Connection{config: config, from: from}
 
-    case connect_socket(config, 0) do
-      {:ok, socket} ->
+    case connect(config, 0) do
+      {:ok, conn, conn_state} ->
         Configurable.schedule_ping(config)
-        {:consumer, %{state | socket: socket}, subscribe_to: [from]}
+        {:consumer, %{state | conn: conn, conn_state: conn_state}, subscribe_to: [from]}
 
       {:error, reason} ->
         {:stop, reason}
     end
   end
 
-  def connect_socket(_config, 3), do: {:error, :timeout}
+  defp connect(_config, 3), do: {:error, :timeout}
 
-  def connect_socket(config, tries) do
+  defp connect(config, tries) do
     case Configurable.connect(config) do
-      {:ok, socket} -> {:ok, socket}
-      {:error, _reason} -> connect_socket(config, tries + 1)
+      {:ok, conn} -> {:ok, conn, nil}
+      {:ok, conn, conn_state} -> {:ok, conn, conn_state}
+      {:error, _reason} -> connect(config, tries + 1)
     end
   end
 
@@ -74,21 +76,32 @@ defmodule Pigeon.Connection do
   # Info
 
   def handle_info(:ping, state) do
-    Client.default().send_ping(state.socket)
+    new_state =
+      case Client.default().send_ping(state.conn, state.conn_state) do
+        {:ok, conn, conn_state} -> %{state | conn: conn, conn_state: conn_state}
+        _else -> state
+      end
+
     Configurable.schedule_ping(state.config)
 
-    {:noreply, [], state}
+    {:noreply, [], new_state}
   end
 
   def handle_info({:closed, _}, %{from: from} = state) do
     GenStage.cancel(from, :closed)
-    {:noreply, [], %{state | socket: nil}}
+    {:noreply, [], %{state | conn: nil}}
   end
 
   def handle_info(msg, state) do
-    case Client.default().handle_end_stream(msg, state) do
-      {:ok, %Stream{} = stream} -> process_end_stream(stream, state)
-      _else -> {:noreply, [], state}
+    case Client.default().handle_end_stream(state.conn, msg, state.conn_state) do
+      {:ok, conn, %Stream{} = stream, conn_state} ->
+        process_end_stream(stream, %{state | conn: conn, conn_state: conn_state})
+
+      {:ok, conn, conn_state} ->
+        {:noreply, [], %{state | conn: conn, conn_state: conn_state}}
+
+      _else ->
+        {:noreply, [], state}
     end
   end
 
@@ -101,7 +114,7 @@ defmodule Pigeon.Connection do
     {:noreply, [], state}
   end
 
-  def process_end_stream(%Stream{id: stream_id} = stream, state) do
+  defp process_end_stream(%Stream{id: stream_id} = stream, state) do
     %{queue: queue, config: config} = state
 
     case NotificationQueue.pop(queue, stream_id) do
@@ -138,11 +151,18 @@ defmodule Pigeon.Connection do
     end
   end
 
-  def send_push(%{config: config, queue: queue} = state, notification, opts) do
+  defp send_push(%{config: config, queue: queue} = state, notification, opts) do
     headers = Configurable.push_headers(config, notification, opts)
     payload = Configurable.push_payload(config, notification, opts)
 
-    Client.default().send_request(state.socket, headers, payload)
+    state =
+      case Client.default().send_request(state.conn, state.stream_id, headers, payload, state.conn_state) do
+        {:ok, conn, conn_state} ->
+          %{state | conn: conn, conn_state: conn_state}
+
+        _else ->
+          state
+      end
 
     new_q =
       NotificationQueue.add(
@@ -165,19 +185,19 @@ defmodule Pigeon.Connection do
 
   # Helpers
 
-  def inc_requested(state, count) do
+  defp inc_requested(state, count) do
     %{state | requested: state.requested + count}
   end
 
-  def dec_requested(state, count) do
+  defp dec_requested(state, count) do
     %{state | requested: state.requested - count}
   end
 
-  def inc_completed(state, count) do
+  defp inc_completed(state, count) do
     %{state | completed: state.completed + count}
   end
 
-  def inc_stream_id(%{stream_id: stream_id} = state) do
+  defp inc_stream_id(%{stream_id: stream_id} = state) do
     %{state | stream_id: stream_id + 2}
   end
 end

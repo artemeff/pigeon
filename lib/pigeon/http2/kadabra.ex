@@ -13,7 +13,7 @@ if Code.ensure_loaded?(Kadabra) do
       Kadabra.open(host, ssl: opts)
     end
 
-    def send_request(pid, headers, data) do
+    def send_request(pid, _stream_id, headers, data, _conn_state) do
       Kadabra.request(pid, headers: headers, body: data)
     end
 
@@ -26,11 +26,12 @@ if Code.ensure_loaded?(Kadabra) do
         iex> Pigeon.Http2.Client.Kadabra.send_ping(pid)
         :ok
     """
-    def send_ping(pid) do
+    def send_ping(pid, _conn_state) do
       Kadabra.ping(pid)
+      :ok
     end
 
-    def handle_end_stream({:end_stream, stream}, _state) do
+    def handle_end_stream(pid, {:end_stream, stream}, conn_state) do
       %{id: id, status: status, headers: headers, body: body} = stream
 
       pigeon_stream = %Pigeon.Http2.Stream{
@@ -40,10 +41,10 @@ if Code.ensure_loaded?(Kadabra) do
         body: body
       }
 
-      {:ok, pigeon_stream}
+      {:ok, pid, pigeon_stream, conn_state}
     end
 
-    def handle_end_stream(msg, _state) do
+    def handle_end_stream(_pid, msg, _conn_state) do
       msg
     end
   end
