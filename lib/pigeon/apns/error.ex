@@ -8,7 +8,8 @@ defmodule Pigeon.APNS.Error do
   alias Pigeon.APNS.Notification
 
   @type error_response ::
-          :bad_collapse_id
+          :invalid_push_type
+          | :bad_collapse_id
           | :bad_device_token
           | :bad_expiration_date
           | :bad_message_id
@@ -57,6 +58,7 @@ defmodule Pigeon.APNS.Error do
     |> parse_response()
   end
 
+  defp parse_response("InvalidPushType"), do: :invalid_push_type
   defp parse_response("BadCollapseId"), do: :bad_collapse_id
   defp parse_response("BadDeviceToken"), do: :bad_device_token
   defp parse_response("BadExpirationDate"), do: :bad_expiration_date
@@ -90,6 +92,10 @@ defmodule Pigeon.APNS.Error do
   @doc false
   @spec msg(error_response) :: String.t()
   # 400
+  def msg(:invalid_push_type) do
+    "The apns-push-type value is invalid"
+  end
+
   def msg(:bad_collapse_id) do
     "The collapse identifier exceeds the maximum allowed size"
   end
