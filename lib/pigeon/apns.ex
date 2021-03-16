@@ -81,9 +81,11 @@ defmodule Pigeon.APNS do
       push(notification, opts[:on_response], opts)
       :ok
     else
+      timeout = Keyword.get(opts, :timeout, @default_timeout)
+
       notification
       |> Enum.map(&Task.async(fn -> sync_push(&1, opts) end))
-      |> Task.yield_many(@default_timeout + 500)
+      |> Task.yield_many(timeout + 500)
       |> Enum.map(fn {task, response} ->
         case response do
           nil -> Task.shutdown(task, :brutal_kill)
@@ -155,6 +157,8 @@ defmodule Pigeon.APNS do
   def stop_connection(name), do: Worker.stop_connection(name)
 
   defp sync_push(notification, opts) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+
     pid = self()
     ref = :erlang.make_ref()
     on_response = fn x -> send(pid, {ref, x}) end
@@ -165,7 +169,7 @@ defmodule Pigeon.APNS do
     receive do
       {^ref, x} -> x
     after
-      @default_timeout -> %{notification | response: :timeout}
+      timeout -> %{notification | response: :timeout}
     end
   end
 end

@@ -97,9 +97,11 @@ defmodule Pigeon.ADM do
     if Keyword.has_key?(opts, :on_response) do
       cast_push(worker_name, notifications, opts[:on_response])
     else
+      timeout = Keyword.get(opts, :timeout, @default_timeout)
+
       notifications
-      |> Enum.map(&Task.async(fn -> sync_push(worker_name, &1) end))
-      |> Task.yield_many(@default_timeout + 500)
+      |> Enum.map(&Task.async(fn -> sync_push(worker_name, &1, opts) end))
+      |> Task.yield_many(timeout + 500)
       |> Enum.map(fn {task, response} ->
         case response do
           nil -> Task.shutdown(task, :brutal_kill)
@@ -116,7 +118,7 @@ defmodule Pigeon.ADM do
     if Keyword.has_key?(opts, :on_response) do
       cast_push(worker_name, notification, opts[:on_response])
     else
-      sync_push(worker_name, notification)
+      sync_push(worker_name, notification, opts)
     end
   end
 
@@ -129,7 +131,9 @@ defmodule Pigeon.ADM do
     GenServer.cast(worker_name, {:push, :adm, notification, on_response})
   end
 
-  defp sync_push(worker_name, notification) do
+  defp sync_push(worker_name, notification, opts) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+
     pid = self()
     ref = :erlang.make_ref()
     on_response = fn x -> send(pid, {ref, x}) end
@@ -139,7 +143,7 @@ defmodule Pigeon.ADM do
     receive do
       {^ref, x} -> x
     after
-      @default_timeout -> %{notification | response: :timeout}
+      timeout -> %{notification | response: :timeout}
     end
   end
 
